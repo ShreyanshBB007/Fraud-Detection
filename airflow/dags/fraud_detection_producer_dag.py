@@ -4,7 +4,7 @@ from airflow.operators.python import PythonOperator
 from airflow.operators.bash import BashOperator
 import json
 import random
-from kafka import KafkaProducer
+from confluent_kafka import Producer
 import time
 
 # Default arguments for the DAG
@@ -53,22 +53,20 @@ def send_to_kafka(**context):
     """Send transaction data to Kafka"""
     try:
         # Create Kafka producer
-        producer = KafkaProducer(
-            bootstrap_servers=['kafka:9092'],  # Use service name for internal Docker communication
-            value_serializer=lambda x: json.dumps(x).encode('utf-8')
-        )
+        producer = Producer({
+            'bootstrap.servers': 'kafka:9092'
+        })
         
         # Generate and send 5 transactions
         transactions_sent = 0
         for i in range(5):
             transaction = generate_transaction_data()
-            producer.send('transactions', value=transaction)
+            producer.produce('transactions', key=transaction['transaction_id'], value=json.dumps(transaction))
             transactions_sent += 1
             print(f"Sent transaction {i+1}: {transaction['transaction_id']}")
             time.sleep(1)  # Small delay between transactions
         
         producer.flush()
-        producer.close()
         
         print(f"Successfully sent {transactions_sent} transactions to Kafka")
         return f"Sent {transactions_sent} transactions"
@@ -80,12 +78,13 @@ def send_to_kafka(**context):
 def check_kafka_connection():
     """Check if Kafka is available"""
     try:
-        from kafka import KafkaProducer
-        producer = KafkaProducer(
-            bootstrap_servers=['kafka:9092'],
-            request_timeout_ms=5000,
-        )
-        producer.close()
+        from confluent_kafka import Producer
+        producer = Producer({
+            'bootstrap.servers': 'kafka:9092',
+            'socket.timeout.ms': 5000
+        })
+        # Try to get metadata to test connection
+        metadata = producer.list_topics(timeout=5)
         print("Kafka connection successful")
         return "Kafka is available"
     except Exception as e:

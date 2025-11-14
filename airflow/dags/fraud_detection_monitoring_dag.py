@@ -4,7 +4,7 @@ from airflow.operators.python import PythonOperator
 from airflow.operators.bash import BashOperator
 import json
 from pymongo import MongoClient
-from kafka import KafkaConsumer, KafkaProducer
+from confluent_kafka import Producer
 import docker
 
 # Default arguments for the DAG
@@ -60,11 +60,12 @@ def check_system_health(**context):
         
         # Check Kafka
         try:
-            producer = KafkaProducer(
-                bootstrap_servers=['kafka:9092'],
-                request_timeout_ms=5000
-            )
-            producer.close()
+            producer = Producer({
+                'bootstrap.servers': 'kafka:9092',
+                'socket.timeout.ms': 5000
+            })
+            # Try to get metadata to test connection
+            metadata = producer.list_topics(timeout=5)
             
             health_report['services']['kafka'] = {
                 'status': 'healthy',

@@ -2,7 +2,7 @@ from datetime import datetime, timedelta
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 import json
-from kafka import KafkaConsumer
+from confluent_kafka import Consumer
 from pymongo import MongoClient
 import time
 
@@ -75,47 +75,60 @@ def process_transactions(**context):
         fraud_alerts_collection = db['fraud_alerts']
         
         # Create Kafka consumer
-        consumer = KafkaConsumer(
-            'transactions',
-            bootstrap_servers=['kafka:9092'],
-            value_deserializer=lambda x: json.loads(x.decode('utf-8')),
-            consumer_timeout_ms=30000,  # Timeout after 30 seconds if no messages
-            auto_offset_reset='latest'  # Only process new messages
-        )
+        consumer = Consumer({
+            'bootstrap.servers': 'kafka:9092',
+            'group.id': 'fraud-detection-group',
+            'auto.offset.reset': 'latest'
+        })
+        
+        consumer.subscribe(['transactions'])
         
         transactions_processed = 0
         fraud_detected = 0
         
-        for message in consumer:
-            transaction = message.value
-            
-            # Apply fraud detection
-            fraud_result = fraud_detection_rules(transaction)
-            
-            # Enrich transaction with fraud detection results
-            transaction['fraud_analysis'] = fraud_result
-            transaction['processed_at'] = datetime.now().isoformat()
-            
-            # Store transaction in MongoDB
-            transactions_collection.insert_one(transaction)
-            transactions_processed += 1
-            
-            # If fraud detected, create alert
-            if fraud_result['is_fraud']:
-                fraud_alert = {
-                    'transaction_id': transaction['transaction_id'],
-                    'user_id': transaction['user_id'],
-                    'amount': transaction['amount'],
-                    'fraud_score': fraud_result['fraud_score'],
-                    'fraud_reasons': fraud_result['fraud_reasons'],
-                    'alert_time': datetime.now().isoformat(),
-                    'status': 'pending_review'
-                }
-                fraud_alerts_collection.insert_one(fraud_alert)
-                fraud_detected += 1
-                print(f"FRAUD ALERT: Transaction {transaction['transaction_id']} - Score: {fraud_result['fraud_score']}")
-            
-            print(f"Processed transaction: {transaction['transaction_id']} - Fraud: {fraud_result['is_fraud']}")
+        # Poll for messages with timeout
+        start_time = time.time()
+        while time.time() - start_time < 30:  # Process for 30 seconds max
+            msg = consumer.poll(timeout=1.0)
+            if msg is None:
+                continue
+            if msg.error():
+                print(f"Consumer error: {msg.error()}")
+                continue
+                
+            try:
+                transaction = json.loads(msg.value().decode('utf-8'))
+                
+                # Apply fraud detection
+                fraud_result = fraud_detection_rules(transaction)
+                
+                # Enrich transaction with fraud detection results
+                transaction['fraud_analysis'] = fraud_result
+                transaction['processed_at'] = datetime.now().isoformat()
+                
+                # Store transaction in MongoDB
+                transactions_collection.insert_one(transaction)
+                transactions_processed += 1
+                
+                # If fraud detected, create alert
+                if fraud_result['is_fraud']:
+                    fraud_alert = {
+                        'transaction_id': transaction['transaction_id'],
+                        'user_id': transaction['user_id'],
+                        'amount': transaction['amount'],
+                        'fraud_score': fraud_result['fraud_score'],
+                        'fraud_reasons': fraud_result['fraud_reasons'],
+                        'alert_time': datetime.now().isoformat(),
+                        'status': 'pending_review'
+                    }
+                    fraud_alerts_collection.insert_one(fraud_alert)
+                    fraud_detected += 1
+                    print(f"FRAUD ALERT: Transaction {transaction['transaction_id']} - Score: {fraud_result['fraud_score']}")
+                
+                print(f"Processed transaction: {transaction['transaction_id']} - Fraud: {fraud_result['is_fraud']}")
+            except json.JSONDecodeError as e:
+                print(f"Error decoding message: {e}")
+                continue
         
         consumer.close()
         mongo_client.close()
