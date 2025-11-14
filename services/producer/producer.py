@@ -1,18 +1,32 @@
-import json, time, random, uuid
+from kafka import KafkaProducer
+import json
+import random
+import time
+from datetime import datetime
 
 def gen_txn():
     return {
-        "txn_id": str(uuid.uuid4()),
-        "user_id": f"user_{random.randint(1,100)}",
-        "product_id": f"product_{random.randint(1,200)}",
-        "amount": round(random.random()*200, 2),
-        "timestamp": int(time.time()*1000)
+        "user_id": random.randint(1, 100),
+        "amount": round(random.uniform(10, 5000), 2),
+        "location": random.choice(["IN", "US", "UK", "CA", "AU"]),
+        "timestamp": datetime.utcnow().isoformat()
     }
 
-def main(loop=10, delay=0.1):
-    for _ in range(loop):
-        print(json.dumps(gen_txn()))
-        time.sleep(delay)
+def start_producer():
+    print("🚀 Starting Producer... Connecting to Kafka...")
+    
+    producer = KafkaProducer(
+        bootstrap_servers="localhost:9092",
+        value_serializer=lambda v: json.dumps(v).encode("utf-8")
+    )
+
+    print("✔ Connected to Kafka")
+
+    while True:
+        txn = gen_txn()
+        producer.send("transactions", txn)
+        print("➡ Sent:", txn)
+        time.sleep(1)
 
 if __name__ == "__main__":
-    main()
+    start_producer()
